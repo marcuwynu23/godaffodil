@@ -115,6 +115,8 @@ go test ./...
 go vet ./...
 ```
 
+CI: [`.github/workflows/test.yml`](./.github/workflows/test.yml) runs on pushes and pull requests to `main` (`gofmt`, `go vet`, `go test -race`).
+
 `cmd/godaffodil` tests cover YAML loading and error paths without requiring a live SSH server.
 
 ## Distribution
@@ -123,7 +125,7 @@ go vet ./...
 go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
 ```
 
-Tag releases per semantic versioning; document breaking API changes in README or a changelog if you add `CHANGELOG.md`.
+**GitHub Releases:** pushing a tag matching `v*` (for example `v1.2.0`) runs [`.github/workflows/release.yml`](./.github/workflows/release.yml): `go test` / `go vet`, cross-compiled binaries for linux/darwin/windows (amd64/arm64 where applicable), and a GitHub Release with `checksums-sha256.txt`. Tag releases per semantic versioning; document breaking API changes in README or a changelog if you add `CHANGELOG.md`.
 
 ## Extension points
 
