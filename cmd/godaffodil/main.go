@@ -59,13 +59,10 @@ type yamlConfig struct {
 	SSHKeyPath string `yaml:"sshKeyPath"`
 	IgnoreFile string `yaml:"ignoreFile"`
 	Verbose    bool   `yaml:"verbose"`
-	Hosts      []struct {
-		Name       string `yaml:"name"`
-		Host       string `yaml:"host"`
-		User       string `yaml:"user"`
-		Port       int    `yaml:"port"`
-		RemotePath string `yaml:"remotePath"`
-	} `yaml:"hosts"`
+	InventoryFile  string        `yaml:"inventoryFile"`
+	InventoryYml   string        `yaml:"inventoryYml"`
+	InventoryGroup string        `yaml:"inventoryGroup"`
+	Hosts          []yamlHost    `yaml:"hosts"`
 	Steps []struct {
 		Name            string `yaml:"name"`
 		Type            string `yaml:"type"`
@@ -84,6 +81,19 @@ type yamlConfig struct {
 		IntervalMS int      `yaml:"interval"`
 		DebounceMS int      `yaml:"debounce"`
 	} `yaml:"watch"`
+}
+
+type yamlHost struct {
+	Name       string `yaml:"name"`
+	Host       string `yaml:"host"`
+	User       string `yaml:"user"`
+	Port       int    `yaml:"port"`
+	RemotePath string `yaml:"remotePath"`
+}
+
+type inventoryYAML struct {
+	Hosts  []yamlHost            `yaml:"hosts"`
+	Groups map[string][]yamlHost `yaml:"groups"`
 }
 
 func runLocal(args []string) error {
@@ -307,14 +317,30 @@ func runFromYAML(args []string) error {
 	}
 
 	hosts := cfg.Hosts
+	if len(hosts) == 0 {
+		inventoryFile := pick(cfg.InventoryFile, cfg.InventoryYml)
+		if inventoryFile != "" {
+			invPath := inventoryFile
+			if !filepath.IsAbs(invPath) {
+				invPath = filepath.Join(filepath.Dir(*configPath), invPath)
+			}
+			invRaw, readErr := os.ReadFile(invPath)
+			if readErr != nil {
+				return readErr
+			}
+			var inv inventoryYAML
+			if unmarshalErr := yaml.Unmarshal(invRaw, &inv); unmarshalErr != nil {
+				return unmarshalErr
+			}
+			if cfg.InventoryGroup != "" && len(inv.Groups[cfg.InventoryGroup]) > 0 {
+				hosts = inv.Groups[cfg.InventoryGroup]
+			} else if len(inv.Hosts) > 0 {
+				hosts = inv.Hosts
+			}
+		}
+	}
 	if len(hosts) == 0 && cfg.RemoteHost != "" && cfg.RemoteUser != "" {
-		hosts = append(hosts, struct {
-			Name       string `yaml:"name"`
-			Host       string `yaml:"host"`
-			User       string `yaml:"user"`
-			Port       int    `yaml:"port"`
-			RemotePath string `yaml:"remotePath"`
-		}{
+		hosts = append(hosts, yamlHost{
 			Name: "default", Host: cfg.RemoteHost, User: cfg.RemoteUser, Port: cfg.Port, RemotePath: cfg.RemotePath,
 		})
 	}
