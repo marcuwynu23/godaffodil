@@ -12,7 +12,7 @@
 
 ## Overview
 
-**GoDaffodil** is a lightweight deployment automation library for Go, with a small **YAML-only** CLI that matches [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) and [PyDaffodil](https://pypi.org/project/pydaffodil/): SSH remote commands, archive-based file transfer, optional **watch** triggers (files + Git), and **multi-host** runs via Ansible-style **`inventory.ini`**.
+**GoDaffodil** is the **Go** implementation in the Daffodil family. It offers a Go API plus a **YAML-only** CLI (`godaffodil run`) aligned with [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) (Node.js) and [PyDaffodil](https://pypi.org/project/pydaffodil/) (Python): SSH, archive-based transfer, **watch** (files + Git), and **multi-host** **`inventory.ini`**. See **[Sister projects](#sister-projects)** for links and CLI equivalents.
 
 ### Key Features
 
@@ -23,6 +23,33 @@
 - **Watch-Based Deployments** — `Watch()` with file paths, Git repo, branches, tags, and events
 - **Multi-Host Deployments** — `inventory.ini` groups for sequential deploys across hosts
 - **YAML Runner** — `godaffodil run --config .daffodil.yml` for declarative steps
+
+---
+
+## Sister projects
+
+The **Daffodil** line shares the same ideas: SSH, archive transfer, `.scpignore`, `Watch()` / `watch()` (files + Git), Ansible-style **`inventory.ini`**, and a shared **`.daffodil.yml`** schema for the official CLIs.
+
+| Project | Language | Install | YAML CLI |
+|---------|----------|---------|----------|
+| **JSDaffodil** | Node.js | [`@marcuwynu23/jsdaffodil`](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) · [source](https://github.com/marcuwynu23/jsdaffodil) | `jsdaffodil --config .daffodil.yml` |
+| **PyDaffodil** | Python | [`pydaffodil`](https://pypi.org/project/pydaffodil/) · [source](https://github.com/marcuwynu23/pydaffodil) | `pydaffodil --config .daffodil.yml` |
+| **GoDaffodil** (this repo) | Go | [module](https://github.com/marcuwynu23/godaffodil) | `godaffodil run --config .daffodil.yml` |
+
+Use **`--watch`** with each CLI when your YAML defines a `watch:` block (Go: `godaffodil run … --watch`).
+
+---
+
+## Documentation
+
+| Resource | Description |
+| -------- | ----------- |
+| [GUIDELINES.md](./GUIDELINES.md) | Usage: Go API, `inventory.ini`, `godaffodil run`, `Watch()`, troubleshooting |
+| [DOCUMENTATION.md](./DOCUMENTATION.md) | Developers: `internal/` package, CLI, tests |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Contribution workflow and CLI scope |
+| [LICENSE](./LICENSE) | MIT License |
+
+Aligned with [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) / [PyDaffodil](https://github.com/marcuwynu23/pydaffodil) documentation set.
 
 ---
 
@@ -234,7 +261,7 @@ See `samples/inventory/main.go`.
 
 ## CLI usage (aligned with JSDaffodil / PyDaffodil)
 
-The Go CLI is intentionally minimal: **only** `run` with a `.daffodil.yml` file, same idea as `jsdaffodil --config` and `pydaffodil --config`.
+The Go CLI is intentionally minimal: **only** `run` with a `.daffodil.yml` file—the same schema as **JSDaffodil** and **PyDaffodil**; see **[Sister projects](#sister-projects)**.
 
 ```bash
 godaffodil run --config samples/.daffodil.yml
@@ -263,7 +290,7 @@ inventoryGroup: webservers
 
 ## Contributing
 
-Issues and pull requests are welcome. For larger changes, open an issue first to agree on scope and API impact.
+See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for workflow, `go test`, and CLI scope (aligned with [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) / [PyDaffodil](https://github.com/marcuwynu23/pydaffodil)). Issues and pull requests are welcome; for larger API changes, open an issue first.
 
 ---
 
@@ -275,7 +302,7 @@ Issues and pull requests are welcome. For larger changes, open an issue first to
 
 ## Acknowledgments
 
-Sister projects: [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) (Node.js), [PyDaffodil](https://pypi.org/project/pydaffodil/) (Python).
+Part of the **Daffodil** family alongside [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) and [PyDaffodil](https://pypi.org/project/pydaffodil/)—see **[Sister projects](#sister-projects)**.
 
 ---
 
