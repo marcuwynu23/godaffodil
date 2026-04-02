@@ -1,27 +1,32 @@
 # GoDaffodil Usage Guidelines
 
-Guide to using the Go API and the **`godaffodil run`** YAML CLI. Developer details: [DOCUMENTATION.md](./DOCUMENTATION.md).
+End-user guide for the Go API and the **`godaffodil run`** YAML CLI: **`inventory.ini`**, **`.daffodil.yml`**, **`Watch()`**, and troubleshooting. For contributors and architecture, see [DOCUMENTATION.md](./DOCUMENTATION.md).
+
+Sister projects: [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) (Node.js), [PyDaffodil](https://github.com/marcuwynu23/pydaffodil) (Python). Shared **`.daffodil.yml`** schema and inventory format.
 
 ## Table of contents
 
 1. [Installation](#installation)
-2. [Quick start (library)](#quick-start-library)
-3. [Configuration (`godaffodil.Config`)](#configuration-godaffodilconfig)
+2. [Quick start](#quick-start)
+3. [Configuration](#configuration)
 4. [Core operations](#core-operations)
 5. [Multi-host (`inventory.ini`)](#multi-host-inventoryini)
 6. [Watch (`Watch`)](#watch-watch)
-7. [YAML CLI (`godaffodil run`)](#yaml-cli-godaffodil-run)
+7. [YAML CLI](#yaml-cli)
 8. [Ignore file (`.scpignore`)](#ignore-file-scpignore)
 9. [Best practices](#best-practices)
 10. [Troubleshooting](#troubleshooting)
+11. [Additional resources](#additional-resources)
 
 ## Installation
+
+**Module:**
 
 ```bash
 go get github.com/marcuwynu23/godaffodil
 ```
 
-CLI binary:
+**CLI binary:**
 
 ```bash
 go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
@@ -29,7 +34,7 @@ go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
 
 Requires **`ssh`**, **`scp`**, and **`tar`** on the client; the remote host needs **`tar`** for extraction.
 
-## Quick start (library)
+## Quick start
 
 ```go
 package main
@@ -61,7 +66,9 @@ func main() {
 }
 ```
 
-## Configuration (`godaffodil.Config`)
+## Configuration
+
+### `godaffodil.Config` (single-host)
 
 | Field | Purpose |
 | ----- | ------- |
@@ -71,7 +78,13 @@ func main() {
 | `SSHKeyPath` | Optional explicit private key |
 | `IgnoreFile` | Ignore patterns (default `.scpignore`) |
 | `Verbose` | Extra logging |
-| `Inventory`, `Group` | Path to `inventory.ini` and section name for multi-host |
+
+### Inventory (multi-host)
+
+| Field | Purpose |
+| ----- | ------- |
+| `Inventory` | Path to `inventory.ini` |
+| `Group` | Section name for hosts |
 
 ## Core operations
 
@@ -102,6 +115,13 @@ See `samples/inventory/main.go`. You can also call **`godaffodil.LoadInventoryTa
 ## Watch (`Watch`)
 
 ```go
+import (
+	"log"
+	"regexp"
+
+	"github.com/marcuwynu23/godaffodil"
+)
+
 w := d.Watch(godaffodil.WatchOptions{
 	Paths:      []string{"./dist"},
 	DebounceMS: 2000,
@@ -120,7 +140,7 @@ select {} // keep process alive
 
 See `samples/watch/main.go`.
 
-## YAML CLI (`godaffodil run`)
+## YAML CLI
 
 The **only** supported CLI entrypoint:
 
@@ -138,7 +158,9 @@ godaffodil run --config samples/.daffodil.yml --watch
 2. **`inventoryFile`** + **`inventoryGroup`**
 3. **`remoteUser`** + **`remoteHost`** for a single default host
 
-There are **no** `godaffodil ssh`, `transfer`, or flag-based `watch` subcommands—use the Go API for one-off operations.
+**Node / Python note:** JSDaffodil and PyDaffodil use `jsdaffodil --config …` and `pydaffodil --config …` **without** a `run` subcommand.
+
+There are **no** extra `godaffodil` subcommands for one-off SSH or transfer—use the Go API or `samples/`.
 
 ## Ignore file (`.scpignore`)
 
@@ -157,10 +179,11 @@ Patterns exclude paths from the transfer bundle. Set `IgnoreFile` in `Config` if
 | `ssh`/`scp`/`tar` not found | Install OpenSSH and tar; ensure `PATH` |
 | Remote extract fails | `tar` on remote; permissions on destination |
 | `no hosts found` | YAML hosts, inventory path + group, or remote defaults |
-| Watch exits immediately | `Watch().Deploy` returns; keep process alive with `select {}` in sample apps |
+| Watch exits immediately | `Watch().Deploy` returns; keep process alive with `select {}` in long-running apps |
 
 ## Additional resources
 
-- [README.md](./README.md) — Sister projects
-- [DOCUMENTATION.md](./DOCUMENTATION.md) — Package layout
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
+- [README.md](./README.md) — Overview and sister projects
+- [DOCUMENTATION.md](./DOCUMENTATION.md) — Developer documentation (`internal/`, `cmd/godaffodil`)
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — How to contribute
+- [samples/](./samples/) — Watch and inventory examples

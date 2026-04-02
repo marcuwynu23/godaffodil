@@ -14,6 +14,10 @@ Documentation for contributors and maintainers. Usage patterns are described in 
 8. [Testing](#testing)
 9. [Distribution](#distribution)
 10. [Extension points](#extension-points)
+11. [Runtime requirements](#runtime-requirements)
+12. [Code style](#code-style)
+13. [Additional resources](#additional-resources)
+14. [Questions](#questions)
 
 ## Project overview
 
@@ -25,7 +29,9 @@ GoDaffodil is the **Go** implementation of the Daffodil tools. It provides:
 - **`LoadInventoryTargets`** for Ansible-style **`inventory.ini`**
 - A minimal **CLI**: **`godaffodil run --config .daffodil.yml [--watch]`** only
 
-Sister projects: [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil), [PyDaffodil](https://github.com/marcuwynu23/pydaffodil).
+Sister projects: [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) (Node.js), [PyDaffodil](https://github.com/marcuwynu23/pydaffodil) (Python).
+
+End-user CLI and API details belong in [GUIDELINES.md](./GUIDELINES.md) and [README.md](./README.md), not in this file.
 
 ## Repository layout
 
@@ -76,11 +82,12 @@ User program or CLI
 
 ## CLI (`cmd/godaffodil`)
 
-- **Only** subcommand: **`run`**
-- Flags: **`--config`** (path to file whose **basename** is exactly `.daffodil.yml`), **`--watch`**
+- **Invocation**: `godaffodil run --config path/to/.daffodil.yml` and optional **`--watch`**
+- **Only** subcommand: **`run`** (unlike **JSDaffodil** / **PyDaffodil**, which use `jsdaffodil --config` / `pydaffodil --config` without a `run` token)
+- Flags: **`--config`** (basename must be exactly `.daffodil.yml`), **`--watch`**
 - Parses YAML into structs matching JSDaffodil/PyDaffodil: `steps`, `hosts`, `watch`, `inventoryFile`, `inventoryGroup`, remote defaults
 - Step types: `local`, `ssh`, `transfer` (maps to `Local`, `SSHCommand`, `TransferFiles`)
-- Does **not** expose one-off `ssh`, `transfer`, or flag-based watch (use the library or `samples/`)
+- Does **not** expose extra subcommands (use the Go API or `samples/`)
 
 ## Features aligned with the Daffodil family
 
@@ -137,5 +144,10 @@ Tag releases per semantic versioning; document breaking API changes in README or
 
 ## Additional resources
 
-- [GUIDELINES.md](./GUIDELINES.md)
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
+- [GUIDELINES.md](./GUIDELINES.md) — User-facing guide
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — PR workflow
+- [README.md](./README.md) — Sister projects and quick links
+
+## Questions
+
+Open an issue on GitHub or refer to [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) / [PyDaffodil](https://github.com/marcuwynu23/pydaffodil) developer docs for cross-language behavior.
