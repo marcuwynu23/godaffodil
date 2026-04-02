@@ -1,33 +1,58 @@
-# GoDaffodil
+<div align="center">
+  <h1>GoDaffodil</h1>
+  <p><strong>Cross-Platform Deployment Automation Framework for Go</strong></p>
+  <p>
+    <img src="https://img.shields.io/github/go-mod/go-version/marcuwynu23/godaffodil?label=Go" alt="Go version"/>
+    <img src="https://img.shields.io/github/stars/marcuwynu23/godaffodil.svg" alt="Stars"/>
+    <img src="https://img.shields.io/github/license/marcuwynu23/godaffodil.svg" alt="License"/>
+  </p>
+</div>
 
-GoDaffodil is a Go version of `jsdaffodil` and `pydaffodil`.
+---
 
-It supports:
-- Module/library usage in Go projects
-- Executable CLI usage (`godaffodil`)
-- Local command execution
-- Remote SSH command execution
-- Remote directory creation
-- Archive-based file transfer (`tar.gz` + `scp` + remote extract)
-- Watch-based deployment triggers (`watch()`)
-- Multi-host deployment via `inventory.ini`
-- Ignore patterns from `.scpignore` (or custom ignore file)
+## Overview
 
-## Install
+**GoDaffodil** is a lightweight deployment automation library and CLI for Go. It mirrors the design of [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) and [PyDaffodil](https://pypi.org/project/pydaffodil/): SSH remote commands, archive-based file transfer, optional **watch** triggers (files + Git), and **multi-host** runs via Ansible-style **`inventory.ini`**.
 
-### As a module
+### Key Features
+
+- **Library and CLI** — Use `godaffodil` as a Go module or invoke the `godaffodil` binary
+- **Archive-Based File Transfer** — `tar.gz` packaging, `scp` transfer, remote extract
+- **SSH Operations** — Remote command execution and directory creation
+- **Ignore Patterns** — `.scpignore` (or custom path) for transfer exclusions
+- **Watch-Based Deployments** — `Watch()` with file paths, Git repo, branches, tags, and events
+- **Multi-Host Deployments** — `inventory.ini` groups for sequential deploys across hosts
+- **YAML Runner** — `godaffodil run --config .daffodil.yml` for declarative steps
+
+---
+
+## Documentation and Examples
+
+Sample programs live under **`samples/`**:
+
+- `samples/watch/main.go` — Watch-driven deployment
+- `samples/inventory/main.go` — Multi-host inventory deployment
+- `samples/.daffodil.yml` — Reference YAML for `godaffodil run`
+
+---
+
+## Installation
+
+### As a Go module
 
 ```bash
 go get github.com/marcuwynu23/godaffodil
 ```
 
-### As an executable
+### As a CLI binary
 
 ```bash
 go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
 ```
 
-## Module Usage
+---
+
+## Quick Start (library)
 
 ```go
 package main
@@ -39,63 +64,150 @@ import (
 )
 
 func main() {
-	cli, err := godaffodil.New(godaffodil.Config{
-		RemoteUser: "deploy",
-		RemoteHost: "example.com",
+	d, err := godaffodil.New(godaffodil.Config{
+		RemoteUser: "deployer",
+		RemoteHost: "231.142.34.222",
 		RemotePath: "/var/www/myapp",
 		Port:       22,
-		SSHKeyPath: "",
 		IgnoreFile: ".scpignore",
-		Verbose:    true,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	steps := []godaffodil.Step{
-		{Name: "Build", Command: func() error { return cli.RunCommand("npm run build") }},
-		{Name: "Transfer", Command: func() error { return cli.TransferFiles("dist", "") }},
-		{Name: "Restart", Command: func() error { return cli.SSHCommand("sudo systemctl restart myapp") }},
+		{Name: "Transfer", Command: func() error { return d.TransferFiles("./dist", "/var/www/myapp") }},
+		{Name: "Install", Command: func() error { return d.SSHCommand("cd /var/www/myapp && npm ci --omit=dev") }},
+		{Name: "Restart", Command: func() error { return d.SSHCommand("pm2 restart myapp") }},
 	}
 
-	if err := cli.Deploy(steps); err != nil {
+	if err := d.Deploy(steps); err != nil {
 		log.Fatal(err)
 	}
 }
 ```
 
-### Watch Example (files + git)
+---
+
+## API Reference
+
+### `godaffodil.New(cfg Config) (*Daffodil, error)`
 
 ```go
-watcher := cli.Watch(godaffodil.WatchOptions{
+type Config struct {
+	RemoteUser string // required when not using inventory
+	RemoteHost string // required when not using inventory
+	RemotePath string // default "."
+	Port       int    // default 22
+	SSHKeyPath string
+	IgnoreFile string // default ".scpignore"
+	Verbose    bool
+	Inventory  string // path to inventory.ini (multi-host)
+	Group      string // inventory group name when using Inventory
+}
+```
+
+In **single-host** mode, `RemoteUser` and `RemoteHost` are required. With **`Inventory`** set, targets are loaded from `inventory.ini` and **`Group`** selects the section.
+
+### Core methods
+
+| Method | Description |
+| ------ | ----------- |
+| `RunCommand(cmd string) error` | Run a shell command locally |
+| `SSHCommand(cmd string) error` | Run a command on the remote host |
+| `MakeDirectory(name string) error` | Create a directory on the remote host |
+| `TransferFiles(localPath, dest string) error` | Archive, transfer, extract (respects ignore file) |
+| `Deploy(steps []Step) error` | Run steps in order; in inventory mode, once per host |
+| `Watch(opts WatchOptions) *Watcher` | Returns a watcher; call `Deploy(steps)` on it |
+
+### `WatchOptions` (high level)
+
+- `Paths`, `DebounceMS`, `RepoPath`, `Branch`, `Branches`, `Tags`, `TagPattern` (`*regexp.Regexp`), `Events`, `IntervalMS`
+
+### `godaffodil.LoadInventoryTargets(path, group string)`
+
+Parses an Ansible-style `inventory.ini`. Exported for tools and tests; the `Daffodil` constructor uses the same parser when `Config.Inventory` is set.
+
+---
+
+## Advanced Topics
+
+### Archive-Based Transfer
+
+The library builds a temporary `tar.gz`, copies it with `scp`, extracts on the remote side, and cleans up. This minimizes SSH round-trips for large trees.
+
+### Ignore file
+
+Patterns in `.scpignore` (or `IgnoreFile`) exclude paths from packaged transfers.
+
+### SSH and remote tools
+
+The CLI and transfer path expect **`ssh`**, **`scp`**, and **`tar`** on the client **and** the remote host where extraction runs.
+
+---
+
+## Best Practices
+
+- Verify `ssh user@host` works with keys before wiring automation.
+- Keep secrets out of source control; use environment variables or your platform’s secret store.
+- In watch mode, keep `DebounceMS` high enough to avoid deploy storms during rapid saves.
+- For production, pin module versions in `go.mod` and test deploy steps in staging first.
+
+---
+
+## Configuration (struct summary)
+
+| Field         | Notes |
+| ------------- | ----- |
+| `RemoteUser`  | SSH user (single-host) |
+| `RemoteHost`  | Hostname or IP (single-host) |
+| `RemotePath`  | Default remote working path |
+| `Port`        | SSH port (default 22) |
+| `SSHKeyPath`  | Optional explicit private key |
+| `IgnoreFile`  | Ignore patterns file |
+| `Verbose`     | Extra logging |
+| `Inventory`   | Path to `inventory.ini` |
+| `Group`       | Group name inside the inventory file |
+
+---
+
+## Watch-Based CI/CD
+
+```go
+w := d.Watch(godaffodil.WatchOptions{
 	Paths:      []string{"./dist", "./src"},
 	DebounceMS: 2000,
 	RepoPath:   ".",
-	Branch:     "main",
+	Branches:   []string{"main", "staging"},
 	Tags:       true,
+	TagPattern: regexp.MustCompile(`^v\d+\.\d+\.\d+$`),
 	Events:     []string{"commit", "merge", "tag"},
 	IntervalMS: 5000,
 })
-
-if err := watcher.Deploy(steps); err != nil {
+if err := w.Deploy(steps); err != nil {
 	log.Fatal(err)
 }
-// keep process running while watcher is active
+// keep the process alive while the watcher runs
 select {}
 ```
 
-### Multi-Host Inventory Example
+See `samples/watch/main.go` for a runnable example.
+
+---
+
+## Multi-Host Deployments with `inventory.ini`
 
 ```ini
 [webservers]
-server1 host=10.0.0.11 user=deploy port=22
-server2 host=10.0.0.12 user=deploy port=22
+server1 host=231.142.34.222 user=deployer port=22
+server2 host=231.142.34.223 user=deployer
+server3 host=231.142.34.224 user=ubuntu port=2200
 ```
 
 ```go
 multi, err := godaffodil.New(godaffodil.Config{
-	Inventory: "./inventory.ini",
-	Group:     "webservers",
+	Inventory:  "./inventory.ini",
+	Group:      "webservers",
 	RemotePath: "/var/www/myapp",
 })
 if err != nil {
@@ -106,9 +218,17 @@ if err := multi.Deploy(steps); err != nil {
 }
 ```
 
-Sample files:
-- `samples/watch/main.go`
-- `samples/inventory/main.go`
+See `samples/inventory/main.go`.
+
+---
+
+## Requirements
+
+- **Go** toolchain compatible with the module’s `go` directive
+- **OpenSSH**-style `ssh` / `scp` available on `PATH`
+- **`tar`** on the remote host for extraction
+
+---
 
 ## CLI Usage
 
@@ -122,28 +242,53 @@ godaffodil ssh --user deploy --host example.com --port 22 "uname -a"
 # Create directory under remote path
 godaffodil mkdir --user deploy --host example.com --remote-path /var/www/myapp "releases"
 
-# Transfer local folder to remote destination
+# Transfer directory to remote
 godaffodil transfer --user deploy --host example.com --remote-path /var/www/myapp --ignore-file .scpignore --dest /var/www/myapp/current dist
 
-# Watch mode (single host)
+# Watch (single host)
 godaffodil watch --user deploy --host example.com --paths ./dist,./src --repo-path . --branch main --events commit,merge,tag --tags=true --step-ssh "pm2 restart myapp"
 
-# Watch mode (inventory.ini multi-host)
+# Watch (inventory multi-host)
 godaffodil watch --inventory ./inventory.ini --group webservers --paths ./dist --step-ssh "pm2 restart myapp"
 
-# YAML config (single or multi-host)
+# Declarative YAML
 godaffodil run --config samples/.daffodil.yml
 godaffodil run --config samples/.daffodil.yml --watch
 ```
 
-Inventory YAML reference inside `.daffodil.yml`:
+### YAML host resolution (`godaffodil run`)
+
+1. Inline **`hosts`** in `.daffodil.yml` (if present)
+2. **`inventoryFile`** + **`inventoryGroup`** → `inventory.ini`
+3. **`remoteUser`** + **`remoteHost`** for a single default host
+
+Example inventory reference:
 
 ```yaml
-inventoryFile: inventory.yml
+inventoryFile: inventory.ini
 inventoryGroup: webservers
 ```
 
-## Notes
+---
 
-- Requires `ssh`, `scp`, and `tar` available in your environment and on the remote host.
-- The `transfer` command creates a temporary archive and removes it after completion.
+## Contributing
+
+Issues and pull requests are welcome. For larger changes, open an issue first to agree on scope and API impact.
+
+---
+
+## License
+
+[MIT License](./LICENSE)
+
+---
+
+## Acknowledgments
+
+Sister projects: [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) (Node.js), [PyDaffodil](https://pypi.org/project/pydaffodil/) (Python).
+
+---
+
+<div align="center">
+  <p>Made with care by <a href="https://github.com/marcuwynu23">Mark Wayne B. Menorca</a></p>
+</div>
