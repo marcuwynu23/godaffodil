@@ -130,6 +130,10 @@ godaffodil watch --user deploy --host example.com --paths ./dist,./src --repo-pa
 
 # Watch mode (inventory.ini multi-host)
 godaffodil watch --inventory ./inventory.ini --group webservers --paths ./dist --step-ssh "pm2 restart myapp"
+
+# YAML config (single or multi-host)
+godaffodil run --config samples/.daffodil.yml
+godaffodil run --config samples/.daffodil.yml --watch
 ```
 
 ## Notes
