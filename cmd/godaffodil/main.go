@@ -24,18 +24,18 @@ func main() {
 }
 
 type yamlConfig struct {
-	RemoteUser     string `yaml:"remoteUser"`
-	RemoteHost     string `yaml:"remoteHost"`
-	RemotePath     string `yaml:"remotePath"`
-	Port           int    `yaml:"port"`
-	SSHKeyPath     string `yaml:"sshKeyPath"`
-	IgnoreFile     string `yaml:"ignoreFile"`
-	Verbose        bool   `yaml:"verbose"`
-	InventoryFile  string `yaml:"inventoryFile"`
-	InventoryYml   string `yaml:"inventoryYml"`
-	InventoryGroup string `yaml:"inventoryGroup"`
+	RemoteUser     string     `yaml:"remoteUser"`
+	RemoteHost     string     `yaml:"remoteHost"`
+	RemotePath     string     `yaml:"remotePath"`
+	Port           int        `yaml:"port"`
+	SSHKeyPath     string     `yaml:"sshKeyPath"`
+	IgnoreFile     string     `yaml:"ignoreFile"`
+	Verbose        bool       `yaml:"verbose"`
+	InventoryFile  string     `yaml:"inventoryFile"`
+	InventoryYml   string     `yaml:"inventoryYml"`
+	InventoryGroup string     `yaml:"inventoryGroup"`
 	Hosts          []yamlHost `yaml:"hosts"`
-	Steps []struct {
+	Steps          []struct {
 		Name            string `yaml:"name"`
 		Type            string `yaml:"type"`
 		Command         string `yaml:"command"`
