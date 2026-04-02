@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/marcuwynu23/godaffodil"
+	"github.com/marcuwynu23/internal"
 )
 
 func main() {
@@ -44,7 +44,7 @@ func runLocal(args []string) error {
 	if len(args) == 0 {
 		return errors.New("local command is required")
 	}
-	d, err := godaffodil.New(godaffodil.Config{
+	d, err := internal.New(internal.Config{
 		RemoteUser: "local",
 		RemoteHost: "localhost",
 	})
@@ -97,7 +97,7 @@ func runTransfer(args []string) error {
 		return errors.New("transfer requires local path argument")
 	}
 
-	d, err := godaffodil.New(godaffodil.Config{
+	d, err := internal.New(internal.Config{
 		RemoteUser: *user,
 		RemoteHost: *host,
 		RemotePath: *remotePath,
@@ -111,7 +111,7 @@ func runTransfer(args []string) error {
 	return d.TransferFiles(fs.Arg(0), *dest)
 }
 
-func parseRemoteFlags(fs *flag.FlagSet, args []string) (godaffodil.Config, string, error) {
+func parseRemoteFlags(fs *flag.FlagSet, args []string) (internal.Config, string, error) {
 	user := fs.String("user", "", "remote SSH user")
 	host := fs.String("host", "", "remote SSH host")
 	port := fs.Int("port", 22, "remote SSH port")
@@ -119,12 +119,12 @@ func parseRemoteFlags(fs *flag.FlagSet, args []string) (godaffodil.Config, strin
 	key := fs.String("key", "", "ssh private key path")
 	verbose := fs.Bool("verbose", false, "verbose output")
 	if err := fs.Parse(args); err != nil {
-		return godaffodil.Config{}, "", err
+		return internal.Config{}, "", err
 	}
 	if fs.NArg() < 1 {
-		return godaffodil.Config{}, "", errors.New("command argument is required")
+		return internal.Config{}, "", errors.New("command argument is required")
 	}
-	return godaffodil.Config{
+	return internal.Config{
 		RemoteUser: *user,
 		RemoteHost: *host,
 		RemotePath: *remotePath,

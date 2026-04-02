@@ -1,4 +1,4 @@
-package godaffodil
+package internal
 
 import (
 	"archive/tar"
