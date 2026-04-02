@@ -61,3 +61,32 @@ steps:
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRunFromYAMLReadsHostsFromInventoryYAML(t *testing.T) {
+	dir := t.TempDir()
+	inv := filepath.Join(dir, "inventory.yml")
+	if err := os.WriteFile(inv, []byte(`
+hosts:
+  - name: web1
+    host: 127.0.0.1
+    user: deploy
+`), 0o644); err != nil {
+		t.Fatalf("write inventory yaml: %v", err)
+	}
+	cfg := filepath.Join(dir, ".daffodil.yml")
+	if err := os.WriteFile(cfg, []byte(`
+inventoryFile: inventory.yml
+steps:
+  - name: Invalid
+    type: unknown
+`), 0o644); err != nil {
+		t.Fatalf("write config yaml: %v", err)
+	}
+	err := runFromYAML([]string{"--config", cfg})
+	if err == nil {
+		t.Fatal("expected unsupported step type error")
+	}
+	if !strings.Contains(err.Error(), "unsupported step type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
