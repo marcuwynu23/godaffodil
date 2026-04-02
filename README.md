@@ -12,11 +12,11 @@
 
 ## Overview
 
-**GoDaffodil** is a lightweight deployment automation library and CLI for Go. It mirrors the design of [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) and [PyDaffodil](https://pypi.org/project/pydaffodil/): SSH remote commands, archive-based file transfer, optional **watch** triggers (files + Git), and **multi-host** runs via Ansible-style **`inventory.ini`**.
+**GoDaffodil** is a lightweight deployment automation library for Go, with a small **YAML-only** CLI that matches [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) and [PyDaffodil](https://pypi.org/project/pydaffodil/): SSH remote commands, archive-based file transfer, optional **watch** triggers (files + Git), and **multi-host** runs via Ansible-style **`inventory.ini`**.
 
 ### Key Features
 
-- **Library and CLI** — Use `godaffodil` as a Go module or invoke the `godaffodil` binary
+- **Go API + YAML runner** — Use the module in your own code; the `godaffodil` binary only runs declarative `.daffodil.yml` (no separate `ssh` / `transfer` / `watch` subcommands)
 - **Archive-Based File Transfer** — `tar.gz` packaging, `scp` transfer, remote extract
 - **SSH Operations** — Remote command execution and directory creation
 - **Ignore Patterns** — `.scpignore` (or custom path) for transfer exclusions
@@ -44,11 +44,13 @@ Sample programs live under **`samples/`**:
 go get github.com/marcuwynu23/godaffodil
 ```
 
-### As a CLI binary
+### As a CLI binary (YAML `run` only)
 
 ```bash
 go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
 ```
+
+The installed binary supports **`godaffodil run --config .daffodil.yml`** only. One-off SSH, transfer, and watch workflows use the **library** in your program (see `samples/`).
 
 ---
 
@@ -230,31 +232,19 @@ See `samples/inventory/main.go`.
 
 ---
 
-## CLI Usage
+## CLI usage (aligned with JSDaffodil / PyDaffodil)
+
+The Go CLI is intentionally minimal: **only** `run` with a `.daffodil.yml` file, same idea as `jsdaffodil --config` and `pydaffodil --config`.
 
 ```bash
-# Local command
-godaffodil local "npm run build"
-
-# Remote SSH command
-godaffodil ssh --user deploy --host example.com --port 22 "uname -a"
-
-# Create directory under remote path
-godaffodil mkdir --user deploy --host example.com --remote-path /var/www/myapp "releases"
-
-# Transfer directory to remote
-godaffodil transfer --user deploy --host example.com --remote-path /var/www/myapp --ignore-file .scpignore --dest /var/www/myapp/current dist
-
-# Watch (single host)
-godaffodil watch --user deploy --host example.com --paths ./dist,./src --repo-path . --branch main --events commit,merge,tag --tags=true --step-ssh "pm2 restart myapp"
-
-# Watch (inventory multi-host)
-godaffodil watch --inventory ./inventory.ini --group webservers --paths ./dist --step-ssh "pm2 restart myapp"
-
-# Declarative YAML
 godaffodil run --config samples/.daffodil.yml
 godaffodil run --config samples/.daffodil.yml --watch
 ```
+
+- **`--config`** — Path to your deployment YAML. The **basename must be exactly** `.daffodil.yml`.
+- **`--watch`** — Uses the `watch:` block in that file and keeps the process running (file + Git triggers as configured).
+
+Ad-hoc commands (local shell, single SSH, mkdir, transfer, or watch flags) are **not** exposed on the CLI; implement them with `godaffodil.New`, `Deploy`, and `Watch` in Go instead.
 
 ### YAML host resolution (`godaffodil run`)
 
