@@ -136,6 +136,13 @@ godaffodil run --config samples/.daffodil.yml
 godaffodil run --config samples/.daffodil.yml --watch
 ```
 
+Inventory YAML reference inside `.daffodil.yml`:
+
+```yaml
+inventoryFile: inventory.yml
+inventoryGroup: webservers
+```
+
 ## Notes
 
 - Requires `ssh`, `scp`, and `tar` available in your environment and on the remote host.
