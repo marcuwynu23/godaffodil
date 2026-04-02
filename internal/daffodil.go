@@ -126,7 +126,7 @@ func New(cfg Config) (*Daffodil, error) {
 	}
 	d.excludeList = d.loadIgnoreList()
 	if usingInventory {
-		targets, err := loadInventoryTargets(cfg.Inventory, cfg.Group)
+		targets, err := LoadInventoryTargets(cfg.Inventory, cfg.Group)
 		if err != nil {
 			return nil, err
 		}
@@ -673,7 +673,9 @@ func shouldExclude(path, base string, patterns []string) bool {
 	return false
 }
 
-func loadInventoryTargets(path, group string) ([]InventoryTarget, error) {
+// LoadInventoryTargets parses an Ansible-style inventory.ini and returns hosts for the given group.
+// If group is empty, hosts from all sections are returned.
+func LoadInventoryTargets(path, group string) ([]InventoryTarget, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read inventory: %w", err)

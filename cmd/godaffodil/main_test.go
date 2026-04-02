@@ -62,20 +62,19 @@ steps:
 	}
 }
 
-func TestRunFromYAMLReadsHostsFromInventoryYAML(t *testing.T) {
+func TestRunFromYAMLReadsHostsFromInventoryINI(t *testing.T) {
 	dir := t.TempDir()
-	inv := filepath.Join(dir, "inventory.yml")
+	inv := filepath.Join(dir, "inventory.ini")
 	if err := os.WriteFile(inv, []byte(`
-hosts:
-  - name: web1
-    host: 127.0.0.1
-    user: deploy
+[webservers]
+web1 host=127.0.0.1 user=deploy port=22
 `), 0o644); err != nil {
-		t.Fatalf("write inventory yaml: %v", err)
+		t.Fatalf("write inventory ini: %v", err)
 	}
 	cfg := filepath.Join(dir, ".daffodil.yml")
 	if err := os.WriteFile(cfg, []byte(`
-inventoryFile: inventory.yml
+inventoryFile: inventory.ini
+inventoryGroup: webservers
 steps:
   - name: Invalid
     type: unknown
