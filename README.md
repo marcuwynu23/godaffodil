@@ -14,6 +14,16 @@
 
 **GoDaffodil** is the **Go** implementation in the Daffodil family. It offers a Go API plus a **YAML-only** CLI (`godaffodil run`) aligned with [JSDaffodil](https://www.npmjs.com/package/@marcuwynu23/jsdaffodil) (Node.js) and [PyDaffodil](https://pypi.org/project/pydaffodil/) (Python): SSH, archive-based transfer, **watch** (files + Git), and **multi-host** **`inventory.ini`**. See **[Sister projects](#sister-projects)** for links and CLI equivalents.
 
+### What are Daffodil tools?
+
+**Daffodil tools** are the three sibling deployment projects:
+
+- **JSDaffodil** for Node.js
+- **PyDaffodil** for Python
+- **GoDaffodil** for Go
+
+All three share the same core workflow: define deployment steps, transfer files as archives, run commands over SSH, support `.scpignore`, scale to multiple hosts using `inventory.ini`, and use the same `.daffodil.yml` schema for CLI-driven deployments.
+
 ### Key Features
 
 - **Go API + YAML runner** — Use the module in your own code; the `godaffodil` binary only runs declarative `.daffodil.yml` (no separate `ssh` / `transfer` / `watch` subcommands)
@@ -270,6 +280,36 @@ godaffodil run --config samples/.daffodil.yml --watch
 
 - **`--config`** — Path to your deployment YAML. The **basename must be exactly** `.daffodil.yml`.
 - **`--watch`** — Uses the `watch:` block in that file and keeps the process running (file + Git triggers as configured).
+
+### Example `.daffodil.yml`
+
+```yaml
+remotePath: /var/www/myapp
+ignoreFile: .scpignore
+verbose: false
+inventoryFile: inventory.ini
+inventoryGroup: webservers
+steps:
+  - name: Build app
+    type: local
+    command: npm run build
+  - name: Upload dist
+    type: transfer
+    localPath: dist
+    destinationPath: /var/www/myapp
+  - name: Restart app
+    type: ssh
+    command: pm2 restart myapp
+watch:
+  paths: ["./dist", "./src"]
+  repoPath: .
+  branch: main
+  events: ["commit", "merge", "tag"]
+  tags: true
+  tagPattern: "^v\\d+\\.\\d+\\.\\d+$"
+  interval: 5000
+  debounce: 2000
+```
 
 Ad-hoc commands (local shell, single SSH, mkdir, transfer, or watch flags) are **not** exposed on the CLI; implement them with `godaffodil.New`, `Deploy`, and `Watch` in Go instead.
 
