@@ -153,3 +153,7 @@ go install github.com/marcuwynu23/godaffodil/cmd/godaffodil@latest
 ## Questions
 
 Open an issue on GitHub or refer to [JSDaffodil](https://github.com/marcuwynu23/jsdaffodil) / [PyDaffodil](https://github.com/marcuwynu23/pydaffodil) developer docs for cross-language behavior.
+
+## Idempotency
+
+SSH provisioning steps are idempotent: `EnsureLineInFile` appends only absent lines, `WriteFileIfChanged` compares content/mode/owner, `TransferFiles` compares content manifests, and package/user/service/directory operations check current state. Steps may use `When: changed`.

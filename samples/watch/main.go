@@ -29,7 +29,10 @@ func main() {
 		{
 			Name: "Upload build",
 			Command: func() error {
-				return deployer.TransferFiles("./dist", remotePath)
+				if _, err := deployer.TransferFiles("./dist", remotePath); err != nil {
+					return err
+				}
+				return nil
 			},
 		},
 		{

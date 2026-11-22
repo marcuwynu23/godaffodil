@@ -57,7 +57,7 @@ func main() {
 		log.Fatal(err)
 	}
 	steps := []godaffodil.Step{
-		{Name: "Upload", Command: func() error { return d.TransferFiles("./dist", "/var/www/app") }},
+		{Name: "Upload", Command: func() error { if _, err := d.TransferFiles("./dist", "/var/www/app"); err != nil { return err }; return nil }},
 		{Name: "Reload", Command: func() error { return d.SSHCommand("systemctl reload nginx") }},
 	}
 	if err := d.Deploy(steps); err != nil {
@@ -78,6 +78,7 @@ func main() {
 | `SSHKeyPath` | Optional explicit private key |
 | `IgnoreFile` | Ignore patterns (default `.scpignore`) |
 | `Verbose` | Extra logging |
+| `Check` | When true, report `would-change` without mutating |
 
 ### Inventory (multi-host)
 
@@ -90,9 +91,11 @@ func main() {
 
 - **`RunCommand(cmd)`** — Local shell.
 - **`SSHCommand(cmd)`** — Remote command.
-- **`TransferFiles(local, dest)`** — Tar, scp, remote extract.
+- **`TransferFiles(local, dest)`** — Tar, scp, remote extract; returns `changed` when the host should change (idempotent manifest-aware transfer).
 - **`MakeDirectory(name)`** — Remote mkdir under remote path context.
+- **`EnsureLineInFile(path, line, marker)`**, **`WriteFileIfChanged(path, content, mode, owner)`**, **`EnsurePackage(name)`**, **`EnsureUser(name, system)`**, **`EnsureServiceEnabled(name, enabled)`**, **`EnsureDirectory(path)`** — Idempotent helpers returning a change flag.
 - **`Deploy(steps)`** — Sequential steps; inventory mode runs per host.
+- **`DeployWithResults(steps)`** — Sequential steps returning structured per-step results.
 
 ## Multi-host (`inventory.ini`)
 
@@ -147,10 +150,12 @@ The **only** supported CLI entrypoint:
 ```bash
 godaffodil run --config samples/.daffodil.yml
 godaffodil run --config samples/.daffodil.yml --watch
+godaffodil run --config samples/.daffodil.yml --check
 ```
 
 - **`--config`**: path whose **basename** is exactly **`.daffodil.yml`**.
 - **`--watch`**: uses the `watch:` block in the file and blocks after starting watchers.
+- **`--check`**: reports `ok` / `changed` / `would-change` per step without mutating the remote host.
 
 **Host resolution** (aligned with JSDaffodil / PyDaffodil):
 
@@ -187,3 +192,7 @@ Patterns exclude paths from the transfer bundle. Set `IgnoreFile` in `Config` if
 - [DOCUMENTATION.md](./DOCUMENTATION.md) — Developer documentation (`internal/`, `cmd/godaffodil`)
 - [CONTRIBUTING.md](./CONTRIBUTING.md) — How to contribute
 - [samples/](./samples/) — Watch and inventory examples
+
+## Idempotency
+
+All Daffodil steps must be safe to re-run: line appends are marker-guarded, file writes compare hashes, transfers use manifests, and package/user/service/directory operations check current state. Prefer `When: changed` for restart-style follow-ups.

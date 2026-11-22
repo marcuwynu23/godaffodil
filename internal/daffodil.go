@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -29,14 +31,28 @@ type Config struct {
 	SSHKeyPath string
 	IgnoreFile string
 	Verbose    bool
+	Check      bool
 	Inventory  string
 	Group      string
 }
 
 // Step defines one deployment step.
 type Step struct {
+	Name         string
+	When         string
+	Command      func() error
+	StateCommand func() (bool, error)
+}
+
+type StepResult struct {
 	Name    string
-	Command func() error
+	Status  string
+	Changed bool
+}
+
+type DeployResult struct {
+	Host    string
+	Results []StepResult
 }
 
 // Daffodil is a lightweight deployment helper for SSH/SCP workflows.
@@ -48,8 +64,11 @@ type Daffodil struct {
 	sshKeyPath  string
 	ignoreFile  string
 	verbose     bool
+	check       bool
 	excludeList []string
 	targets     []InventoryTarget
+	sshRunFn    func(command string) (string, error)
+	scpFn       func(localPath, remotePath string) error
 }
 
 type InventoryTarget struct {
@@ -120,6 +139,7 @@ func New(cfg Config) (*Daffodil, error) {
 		sshKeyPath: cfg.SSHKeyPath,
 		ignoreFile: cfg.IgnoreFile,
 		verbose:    cfg.Verbose,
+		check:      cfg.Check,
 	}
 	if strings.TrimSpace(d.ignoreFile) == "" {
 		d.ignoreFile = ".scpignore"
@@ -136,15 +156,21 @@ func New(cfg Config) (*Daffodil, error) {
 		d.targets = targets
 	}
 
+	d.check = cfg.Check
+	d.sshRunFn = d.sshRun
+	d.scpFn = d.scpFile
+
 	return d, nil
 }
 
 type Options struct {
 	Verbose bool
+	Check   bool
 }
 
 func (d *Daffodil) SetOption(opts Options) {
 	d.verbose = opts.Verbose
+	d.check = opts.Check
 }
 
 // RunCommand executes a local shell command.
@@ -169,6 +195,13 @@ func (d *Daffodil) SSHCommand(command string) error {
 	if strings.TrimSpace(command) == "" {
 		return errors.New("ssh command must not be empty")
 	}
+	if _, err := d.sshRunFn(command); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *Daffodil) sshRun(command string) (string, error) {
 	args := []string{
 		"-p", fmt.Sprintf("%d", d.port),
 	}
@@ -176,12 +209,13 @@ func (d *Daffodil) SSHCommand(command string) error {
 		args = append(args, "-i", d.sshKeyPath)
 	}
 	args = append(args, d.remoteAddr(), command)
-
 	cmd := exec.Command("ssh", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	out, err := cmd.Output()
+	if err != nil {
+		return string(out), err
+	}
+	return string(out), nil
 }
 
 // SSH is an alias for SSHCommand.
@@ -195,13 +229,481 @@ func (d *Daffodil) MakeDirectory(dirName string) error {
 		return errors.New("directory name must not be empty")
 	}
 	target := remoteJoin(d.remotePath, dirName)
-	return d.SSHCommand(fmt.Sprintf("mkdir -p %q", target))
+	return d.SSHCommand(fmt.Sprintf("mkdir -p %s", shellQuote(target)))
 }
 
-// TransferFiles archives local content, uploads it via SCP, extracts remotely, and cleans up.
-func (d *Daffodil) TransferFiles(localPath, destinationPath string) error {
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func (d *Daffodil) remoteResolvePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := d.remoteHome()
+		if err != nil {
+			return p
+		}
+		if p == "~" {
+			return home
+		}
+		return home + "/" + strings.TrimPrefix(p, "~/")
+	}
+	if strings.HasPrefix(p, "/") {
+		return p
+	}
+	return d.remotePath + "/" + strings.TrimPrefix(p, "/")
+}
+
+func (d *Daffodil) remoteHome() (string, error) {
+	out, err := d.sshRunFn("printf '%s' \"$HOME\"")
+	if err != nil {
+		return "", err
+	}
+	home := strings.TrimSpace(out)
+	if home == "" {
+		return "", errors.New("unable to determine remote home directory")
+	}
+	return home, nil
+}
+
+func (d *Daffodil) readRemoteFile(path string) (string, bool, error) {
+	quoted := shellQuote(path)
+	cmd := fmt.Sprintf("if [ -f %s ]; then cat %s; else exit 3; fi", quoted, quoted)
+	out, err := d.sshRunFn(cmd)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read remote file %s: %w", path, err)
+	}
+	return out, true, nil
+}
+
+func (d *Daffodil) writeRemoteFile(path string, content string) error {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if _, err := d.sshRunFn(fmt.Sprintf("mkdir -p %s", shellQuote(dir))); err != nil {
+			return fmt.Errorf("failed to create remote directory %s: %w", dir, err)
+		}
+	}
+	writeCmd := fmt.Sprintf("cat > %s <<'DAFFODIL_EOF'\n%s\nDAFFODIL_EOF", shellQuote(path), content)
+	if _, err := d.sshRunFn(writeCmd); err != nil {
+		return fmt.Errorf("failed to write remote file %s: %w", path, err)
+	}
+	return nil
+}
+
+func (d *Daffodil) remoteFileHash(path string) (string, error) {
+	quoted := shellQuote(path)
+	cmd := fmt.Sprintf(
+		"if [ -f %s ]; then (sha256sum %s 2>/dev/null || shasum -a 256 %s 2>/dev/null || openssl dgst -sha256 %s 2>/dev/null) | awk '{print $NF}'; else exit 3; fi",
+		quoted, quoted, quoted, quoted,
+	)
+	out, err := d.sshRunFn(cmd)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			return "", nil
+		}
+		return "", fmt.Errorf("hash remote file %s: %w", path, err)
+	}
+	hash := strings.TrimSpace(out)
+	if !isSHA256Hex(hash) {
+		return "", nil
+	}
+	return hash, nil
+}
+
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *Daffodil) remoteFileMatches(path string, content string) (bool, error) {
+	expected := sha256String(content)
+	actual, err := d.remoteFileHash(path)
+	if err != nil {
+		return false, err
+	}
+	if actual != "" {
+		return actual == expected, nil
+	}
+	current, exists, err := d.readRemoteFile(path)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	return current == content, nil
+}
+
+func (d *Daffodil) remoteFileStat(path string) (map[string]string, error) {
+	quoted := shellQuote(path)
+	cmd := fmt.Sprintf(
+		"if [ -f %s ]; then (stat -c '%%a %%U:%%G' %s 2>/dev/null); else exit 3; fi",
+		quoted, quoted,
+	)
+	out, err := d.sshRunFn(cmd)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat remote file %s: %w", path, err)
+	}
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) < 1 {
+		return map[string]string{}, nil
+	}
+	mode := parts[0]
+	owner := ""
+	if len(parts) > 1 {
+		owner = parts[1]
+	}
+	return map[string]string{"mode": mode, "owner": owner}, nil
+}
+
+func sha256String(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// EnsureLineInFile appends `line` to a remote file only when it is absent.
+// When a managed `marker` block is provided, the block content is replaced in place.
+// Returns true when the host would change (or did change).
+func (d *Daffodil) EnsureLineInFile(path string, line string, marker string) (bool, error) {
+	if strings.TrimSpace(line) == "" {
+		return false, errors.New("ensure line in file requires a line")
+	}
+	target := d.remoteResolvePath(path)
+	current, _, err := d.readRemoteFile(target)
+	if err != nil {
+		return false, err
+	}
+	var next string
+	if marker != "" {
+		next = d.replaceManagedBlock(current, marker, line)
+	} else {
+		next = d.appendManagedLine(current, line)
+	}
+	if next == current {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
+	}
+	if err := d.writeRemoteFile(target, next); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (d *Daffodil) appendManagedLine(current string, line string) string {
+	lines := strings.Split(current, "\n")
+	for _, existing := range lines {
+		if strings.TrimRight(existing, "\r") == line {
+			return current
+		}
+	}
+	if current == "" {
+		return line + "\n"
+	}
+	if strings.HasSuffix(current, "\n") {
+		return current + line + "\n"
+	}
+	return current + "\n" + line + "\n"
+}
+
+func (d *Daffodil) replaceManagedBlock(current string, marker string, line string) string {
+	marker = strings.TrimSpace(marker)
+	begin := marker
+	end := marker
+	if strings.Contains(marker, "{mark}") {
+		begin = strings.Replace(marker, "{mark}", "BEGIN", 1)
+		end = strings.Replace(marker, "{mark}", "END", 1)
+	} else {
+		begin = marker + " BEGIN"
+		end = marker + " END"
+	}
+	block := begin + "\n" + line + "\n" + end
+	lines := strings.Split(current, "\n")
+	beginIdx := -1
+	for i, existing := range lines {
+		if strings.TrimRight(existing, "\r") == begin {
+			beginIdx = i
+			break
+		}
+	}
+	if beginIdx >= 0 {
+		endIdx := -1
+		for i := beginIdx + 1; i < len(lines); i++ {
+			if strings.TrimRight(lines[i], "\r") == end {
+				endIdx = i
+				break
+			}
+		}
+		var tail []string
+		if endIdx >= 0 {
+			tail = lines[endIdx+1:]
+		}
+		var next []string
+		next = append(next, lines[:beginIdx]...)
+		next = append(next, strings.Split(block, "\n")...)
+		next = append(next, tail...)
+		return strings.Join(next, "\n")
+	}
+	prefix := current
+	if prefix != "" && !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	return prefix + block + "\n"
+}
+
+// WriteFileIfChanged writes content to a remote file only when content/mode/owner differ.
+// Returns true when the host would change (or did change).
+func (d *Daffodil) WriteFileIfChanged(path string, content string, mode string, owner string) (bool, error) {
+	target := d.remoteResolvePath(path)
+	matches, err := d.remoteFileMatches(target, content)
+	if err != nil {
+		return false, err
+	}
+	modeOk := true
+	ownerOk := true
+	if mode != "" || owner != "" {
+		st, err := d.remoteFileStat(target)
+		if err != nil {
+			return false, err
+		}
+		if st == nil {
+			modeOk = false
+			ownerOk = false
+		} else {
+			if mode != "" {
+				desired, convErr := strconv.ParseInt(mode, 8, 32)
+				have, convErr2 := strconv.ParseInt(st["mode"], 8, 32)
+				modeOk = convErr == nil && convErr2 == nil && int(desired) == int(have)
+			}
+			if owner != "" {
+				wantUser := ""
+				wantGroup := ""
+				if idx := strings.Index(owner, ":"); idx >= 0 {
+					wantUser = owner[:idx]
+					wantGroup = owner[idx+1:]
+				} else {
+					wantUser = owner
+				}
+				haveOwner := st["owner"]
+				if wantGroup != "" {
+					ownerOk = haveOwner == owner
+				} else {
+					ownerOk = strings.SplitN(haveOwner, ":", 2)[0] == wantUser
+				}
+			}
+		}
+	}
+	if matches && modeOk && ownerOk {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
+	}
+	if !matches {
+		if err := d.writeRemoteFile(target, content); err != nil {
+			return false, err
+		}
+	}
+	if mode != "" && !modeOk {
+		if _, err := d.sshRunFn(fmt.Sprintf("chmod %s %s", shellQuote(mode), shellQuote(target))); err != nil {
+			return false, fmt.Errorf("failed to set mode on %s: %w", target, err)
+		}
+	}
+	if owner != "" && !ownerOk {
+		if _, err := d.sshRunFn(fmt.Sprintf("chown %s %s", shellQuote(owner), shellQuote(target))); err != nil {
+			return false, fmt.Errorf("failed to set owner on %s: %w", target, err)
+		}
+	}
+	return true, nil
+}
+
+// EnsurePackage ensures a system package is installed.
+// Returns true when the host would change (or did change).
+func (d *Daffodil) EnsurePackage(name string) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("ensure package requires a package name")
+	}
+	manager, err := d.detectPackageManager()
+	if err != nil {
+		return false, err
+	}
+	if manager != "" {
+		installed := false
+		if manager == "apt" {
+			if _, err := d.sshRunFn(fmt.Sprintf("dpkg-query -W -f='%%{Status}' -- %s 2>/dev/null | grep -q 'install ok installed'", shellQuote(name))); err == nil {
+				installed = true
+			}
+		} else if manager == "rpm" {
+			if _, err := d.sshRunFn(fmt.Sprintf("rpm -q -- %s >/dev/null 2>&1", shellQuote(name))); err == nil {
+				installed = true
+			}
+		} else if manager == "apk" {
+			if _, err := d.sshRunFn(fmt.Sprintf("apk info -e -- %s >/dev/null 2>&1", shellQuote(name))); err == nil {
+				installed = true
+			}
+		} else {
+			if _, err := d.sshRunFn(fmt.Sprintf("brew list --formula %s >/dev/null 2>&1 || brew list --cask %s >/dev/null 2>&1", shellQuote(name), shellQuote(name))); err == nil {
+				installed = true
+			}
+		}
+		if installed {
+			return false, nil
+		}
+	}
+	if d.check {
+		return true, nil
+	}
+	installCmd := ""
+	switch manager {
+	case "apt":
+		installCmd = fmt.Sprintf("export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1 || true; apt-get install -y -q -- %s", shellQuote(name))
+	case "rpm":
+		installCmd = fmt.Sprintf("if command -v dnf >/dev/null 2>&1; then dnf install -y %s; else yum install -y %s; fi", shellQuote(name), shellQuote(name))
+	case "apk":
+		installCmd = fmt.Sprintf("apk add --no-cache %s", shellQuote(name))
+	case "":
+		return false, errors.New("no supported package manager found on the remote host")
+	default:
+		installCmd = fmt.Sprintf("brew install %s", shellQuote(name))
+	}
+	if _, err := d.sshRunFn(installCmd); err != nil {
+		return false, fmt.Errorf("failed to install package %s: %w", name, err)
+	}
+	return true, nil
+}
+
+func (d *Daffodil) detectPackageManager() (string, error) {
+	cmd := "if command -v dpkg-query >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then echo apt; elif command -v rpm >/dev/null 2>&1; then echo rpm; elif command -v apk >/dev/null 2>&1; then echo apk; elif command -v brew >/dev/null 2>&1; then echo brew; fi"
+	out, err := d.sshRunFn(cmd)
+	if err != nil {
+		return "", err
+	}
+	mgr := strings.TrimSpace(out)
+	if mgr == "" {
+		return "", errors.New("no supported package manager found on the remote host")
+	}
+	return mgr, nil
+}
+
+// EnsureUser ensures a system user exists.
+// Returns true when the host would change (or did change).
+func (d *Daffodil) EnsureUser(name string, system bool) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("ensure user requires a user name")
+	}
+	esc := shellQuote(name)
+	if _, err := d.sshRunFn(fmt.Sprintf("id -u %s >/dev/null 2>&1", esc)); err == nil {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
+	}
+	systemFlag := ""
+	if system {
+		systemFlag = " --system"
+	}
+	cmd := fmt.Sprintf(
+		"if command -v useradd >/dev/null 2>&1; then useradd%s -m %s || useradd%s %s; elif command -v adduser >/dev/null 2>&1; then adduser -D %s 2>/dev/null || adduser --disabled-password --gecos  %s; else echo 'no user management tool available' >&2; exit 1; fi",
+		systemFlag, esc, systemFlag, esc, esc, esc,
+	)
+	if _, err := d.sshRunFn(cmd); err != nil {
+		return false, fmt.Errorf("failed to create user %s: %w", name, err)
+	}
+	return true, nil
+}
+
+// EnsureServiceEnabled ensures a service is enabled (or disabled).
+// Returns true when the host would change (or did change).
+func (d *Daffodil) EnsureServiceEnabled(name string, enabled bool) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("ensure service enabled requires a service name")
+	}
+	esc := shellQuote(name)
+	mgrOut, err := d.sshRunFn("if command -v systemctl >/dev/null 2>&1; then echo systemctl; elif command -v rc-update >/dev/null 2>&1; then echo openrc; fi")
+	if err != nil {
+		return false, err
+	}
+	manager := strings.TrimSpace(mgrOut)
+	if manager == "" {
+		return false, errors.New("no supported service manager found on the remote host")
+	}
+	var currently bool
+	if manager == "systemctl" {
+		out, err := d.sshRunFn(fmt.Sprintf("systemctl is-enabled %s 2>/dev/null", esc))
+		if err == nil {
+			currently = strings.HasPrefix(strings.TrimSpace(out), "enabled")
+		}
+	} else {
+		if _, err := d.sshRunFn(fmt.Sprintf("rc-update show 2>/dev/null | grep -qw -- %s", esc)); err == nil {
+			currently = true
+		}
+	}
+	if currently == enabled {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
+	}
+	var cmd string
+	if manager == "systemctl" {
+		action := "enable"
+		if !enabled {
+			action = "disable"
+		}
+		cmd = fmt.Sprintf("systemctl %s %s", action, esc)
+	} else {
+		action := "add"
+		if !enabled {
+			action = "del"
+		}
+		cmd = fmt.Sprintf("rc-update %s %s", action, esc)
+	}
+	if _, err := d.sshRunFn(cmd); err != nil {
+		return false, fmt.Errorf("failed to %s service %s: %w", map[bool]string{true: "enable", false: "disable"}[enabled], name, err)
+	}
+	return true, nil
+}
+
+// EnsureDirectory ensures a remote directory exists (mkdir -p semantics with change detection).
+// Returns true when the host would change (or did change).
+func (d *Daffodil) EnsureDirectory(dirPath string) (bool, error) {
+	target := d.remoteResolvePath(dirPath)
+	if _, err := d.sshRunFn(fmt.Sprintf("[ -d %s ]", shellQuote(target))); err == nil {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
+	}
+	if _, err := d.sshRunFn(fmt.Sprintf("mkdir -p %s", shellQuote(target))); err != nil {
+		return false, fmt.Errorf("failed to create directory %s: %w", target, err)
+	}
+	return true, nil
+}
+
+func (d *Daffodil) TransferFiles(localPath string, destinationPath string) (bool, error) {
 	if strings.TrimSpace(localPath) == "" {
-		return errors.New("local path must not be empty")
+		return false, errors.New("local path must not be empty")
 	}
 	if destinationPath == "" {
 		destinationPath = d.remotePath
@@ -209,7 +711,23 @@ func (d *Daffodil) TransferFiles(localPath, destinationPath string) error {
 
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return fmt.Errorf("stat local path: %w", err)
+		return false, fmt.Errorf("stat local path: %w", err)
+	}
+
+	body, hash, fileCount, err := d.localManifest(localPath, info.IsDir())
+	if err != nil {
+		return false, err
+	}
+	remoteManifestPath := d.remoteManifestPath(destinationPath)
+	storedHash, err := d.readStoredManifest(remoteManifestPath)
+	if err != nil {
+		return false, err
+	}
+	if storedHash != "" && storedHash == hash {
+		return false, nil
+	}
+	if d.check {
+		return true, nil
 	}
 
 	tmpArchive := filepath.Join(os.TempDir(), fmt.Sprintf("godaffodil-%d.tar.gz", time.Now().UnixNano()))
@@ -218,32 +736,135 @@ func (d *Daffodil) TransferFiles(localPath, destinationPath string) error {
 	}()
 
 	if err := createTarGz(tmpArchive, localPath, info.IsDir(), d.excludeList); err != nil {
-		return fmt.Errorf("create archive: %w", err)
+		return false, fmt.Errorf("create archive: %w", err)
 	}
 
 	remoteArchive := remoteJoin(destinationPath, filepath.Base(tmpArchive))
-	if err := d.scpFile(tmpArchive, remoteArchive); err != nil {
-		return fmt.Errorf("scp upload failed: %w", err)
+	if err := d.scpFn(tmpArchive, remoteArchive); err != nil {
+		return false, fmt.Errorf("scp upload failed: %w", err)
 	}
 
 	extractCmd := fmt.Sprintf(
 		"mkdir -p %q && cd %q && tar -xzf %q && rm -f %q",
 		destinationPath, destinationPath, remoteArchive, remoteArchive,
 	)
-	if err := d.SSHCommand(extractCmd); err != nil {
-		return fmt.Errorf("remote extract failed: %w", err)
+	if _, err := d.sshRunFn(extractCmd); err != nil {
+		return false, fmt.Errorf("remote extract failed: %w", err)
 	}
 
+	if err := d.writeStoredManifest(remoteManifestPath, hash, fileCount, body); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (d *Daffodil) localManifest(localPath string, isDir bool) (string, string, int, error) {
+	var entries []string
+	if isDir {
+		err := filepath.WalkDir(localPath, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			_, statErr := entry.Info()
+			if statErr != nil {
+				return statErr
+			}
+			if shouldExclude(path, localPath, d.excludeList) {
+				return nil
+			}
+			rel, relErr := filepath.Rel(localPath, path)
+			if relErr != nil {
+				return relErr
+			}
+			hash, hashErr := fileSHA256(path)
+			if hashErr != nil {
+				return hashErr
+			}
+			entries = append(entries, fmt.Sprintf("%s  %s", hash, filepath.ToSlash(rel)))
+			return nil
+		})
+		if err != nil {
+			return "", "", 0, fmt.Errorf("walk local path: %w", err)
+		}
+	} else {
+		hash, err := fileSHA256(localPath)
+		if err != nil {
+			return "", "", 0, err
+		}
+		entries = append(entries, fmt.Sprintf("%s  %s", hash, filepath.Base(localPath)))
+	}
+	sort.Strings(entries)
+	body := ""
+	if len(entries) > 0 {
+		body = strings.Join(entries, "\n") + "\n"
+	}
+	sum := sha256.Sum256([]byte(body))
+	hash := hex.EncodeToString(sum[:])
+	return body, hash, len(entries), nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (d *Daffodil) remoteManifestPath(destinationPath string) string {
+	return remoteJoin(destinationPath, ".daffodil-manifest")
+}
+
+func (d *Daffodil) readStoredManifest(path string) (string, error) {
+	cmd := fmt.Sprintf("if [ -f %s ]; then cat %s; fi", shellQuote(path), shellQuote(path))
+	out, err := d.sshRunFn(cmd)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() != 0 {
+			return "", nil
+		}
+		return "", fmt.Errorf("read remote manifest %s: %w", path, err)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 || lines[0] != "daffodil-manifest-v1" {
+		return "", nil
+	}
+	digest := strings.TrimSpace(lines[1])
+	if !isSHA256Hex(digest) {
+		return "", nil
+	}
+	return digest, nil
+}
+
+func (d *Daffodil) writeStoredManifest(path string, hash string, count int, body string) error {
+	writeCmd := fmt.Sprintf("cat > %s <<'DAFFODIL_EOF'\ndaffodil-manifest-v1\n%s\n%d\n%s\nDAFFODIL_EOF", shellQuote(path), hash, count, body)
+	if _, err := d.sshRunFn(writeCmd); err != nil {
+		return fmt.Errorf("write remote manifest %s: %w", path, err)
+	}
 	return nil
 }
 
 // Deploy executes steps sequentially and stops on first error.
 func (d *Daffodil) Deploy(steps []Step) error {
-	if len(steps) == 0 {
-		return errors.New("deploy requires at least one step")
+	_, err := d.DeployWithResults(steps)
+	if err != nil {
+		return err
 	}
+	return nil
+}
+
+// DeployWithResults executes steps sequentially and returns structured step results.
+// It stops on the first failed step and returns the collected results alongside the error.
+func (d *Daffodil) DeployWithResults(steps []Step) ([]StepResult, error) {
 	if len(d.targets) > 0 {
-		for _, target := range d.targets {
+		var firstErr error
+		for i := range d.targets {
+			target := &d.targets[i]
 			prevUser, prevHost, prevPort := d.remoteUser, d.remoteHost, d.port
 			d.remoteUser, d.remoteHost = target.User, target.Host
 			if target.Port > 0 {
@@ -252,30 +873,79 @@ func (d *Daffodil) Deploy(steps []Step) error {
 			if d.verbose {
 				fmt.Printf("==== Deploying to [%s] (%s) ====\n", target.Name, target.Host)
 			}
-			err := d.deploySingle(steps)
+			_, err := d.deployWithResultsInternal(steps)
 			d.remoteUser, d.remoteHost, d.port = prevUser, prevHost, prevPort
 			if err != nil {
-				return err
+				if firstErr == nil {
+					firstErr = err
+				}
+				return nil, firstErr
 			}
 		}
-		return nil
+		return []StepResult{}, nil
 	}
-	return d.deploySingle(steps)
+	return d.deployWithResultsInternal(steps)
 }
 
-func (d *Daffodil) deploySingle(steps []Step) error {
-	for i, step := range steps {
-		if step.Command == nil {
-			return fmt.Errorf("step %d (%s) has no command", i+1, step.Name)
-		}
-		if d.verbose {
-			fmt.Printf("Step %d: %s\n", i+1, step.Name)
-		}
-		if err := step.Command(); err != nil {
-			return fmt.Errorf("deploy failed at step %d (%s): %w", i+1, step.Name, err)
-		}
+func (d *Daffodil) deployWithResultsInternal(steps []Step) ([]StepResult, error) {
+	if len(steps) == 0 {
+		return nil, errors.New("deploy requires at least one step")
 	}
-	return nil
+
+	results := []StepResult{}
+	anyChanged := false
+	failedIndex := -1
+	failedName := ""
+	var failedErr error
+
+	for i := range steps {
+		step := &steps[i]
+		name := step.Name
+		status := "ok"
+		changed := false
+
+		if step.When == "changed" && !anyChanged {
+			status = "skipped"
+		} else {
+			if step.StateCommand != nil {
+				var err error
+				changed, err = step.StateCommand()
+				if err != nil {
+					failedIndex, failedName, failedErr = i, step.Name, err
+					status = "failed"
+					results = append(results, StepResult{Name: name, Status: "failed", Changed: false})
+					break
+				}
+			} else if step.Command != nil {
+				if err := step.Command(); err != nil {
+					failedIndex, failedName, failedErr = i, step.Name, err
+					status = "failed"
+					results = append(results, StepResult{Name: name, Status: "failed", Changed: false})
+					break
+				}
+			} else {
+				failedIndex, failedName, failedErr = i, step.Name, errors.New("step has no command")
+				status = "failed"
+				results = append(results, StepResult{Name: name, Status: "failed", Changed: false})
+				break
+			}
+			if changed {
+				anyChanged = true
+				if d.check {
+					status = "would-change"
+				} else {
+					status = "changed"
+				}
+			}
+		}
+
+		results = append(results, StepResult{Name: name, Status: status, Changed: changed})
+	}
+
+	if failedErr != nil {
+		return results, fmt.Errorf("deploy failed at step %d (%s): %w", failedIndex+1, failedName, failedErr)
+	}
+	return results, nil
 }
 
 func (d *Daffodil) Watch(options WatchOptions) *Watcher {
@@ -512,7 +1182,7 @@ func (d *Daffodil) scpFile(localPath, remotePath string) error {
 	cmd := exec.Command("scp", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return d.scpFn(localPath, remotePath)
 }
 
 func shellCommand(command string) *exec.Cmd {

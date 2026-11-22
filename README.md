@@ -115,7 +115,7 @@ func main() {
 	}
 
 	steps := []godaffodil.Step{
-		{Name: "Transfer", Command: func() error { return d.TransferFiles("./dist", "/var/www/myapp") }},
+		{Name: "Transfer", Command: func() error { if _, err := d.TransferFiles("./dist", "/var/www/myapp"); err != nil { return err }; return nil }},
 		{Name: "Install", Command: func() error { return d.SSHCommand("cd /var/www/myapp && npm ci --omit=dev") }},
 		{Name: "Restart", Command: func() error { return d.SSHCommand("pm2 restart myapp") }},
 	}
@@ -141,6 +141,7 @@ type Config struct {
 	SSHKeyPath string
 	IgnoreFile string // default ".scpignore"
 	Verbose    bool
+	Check      bool   // when true, report would-change without mutating
 	Inventory  string // path to inventory.ini (multi-host)
 	Group      string // inventory group name when using Inventory
 }
@@ -155,8 +156,9 @@ In **single-host** mode, `RemoteUser` and `RemoteHost` are required. With **`Inv
 | `RunCommand(cmd string) error` | Run a shell command locally |
 | `SSHCommand(cmd string) error` | Run a command on the remote host |
 | `MakeDirectory(name string) error` | Create a directory on the remote host |
-| `TransferFiles(localPath, dest string) error` | Archive, transfer, extract (respects ignore file) |
+| `TransferFiles(localPath, dest string) (bool, error)` | Archive, transfer, extract (respects ignore file); `bool` reports whether the host should change |
 | `Deploy(steps []Step) error` | Run steps in order; in inventory mode, once per host |
+| `DeployWithResults(steps []Step) ([]StepResult, error)` | Run steps and return per-step results (`ok` / `changed` / `would-change` / `skipped` / `failed`) |
 | `Watch(opts WatchOptions) *Watcher` | Returns a watcher; call `Deploy(steps)` on it |
 
 ### `WatchOptions` (high level)
@@ -276,10 +278,12 @@ The Go CLI is intentionally minimal: **only** `run` with a `.daffodil.yml` file�
 ```bash
 godaffodil run --config samples/.daffodil.yml
 godaffodil run --config samples/.daffodil.yml --watch
+godaffodil run --config samples/.daffodil.yml --check
 ```
 
 - **`--config`** — Path to your deployment YAML. The **basename must be exactly** `.daffodil.yml`.
 - **`--watch`** — Uses the `watch:` block in that file and keeps the process running (file + Git triggers as configured).
+- **`--check`** — Reports `ok` / `changed` / `would-change` per step without mutating the remote host.
 
 ### Example `.daffodil.yml`
 
@@ -287,6 +291,7 @@ godaffodil run --config samples/.daffodil.yml --watch
 remotePath: /var/www/myapp
 ignoreFile: .scpignore
 verbose: false
+check: false
 inventoryFile: inventory.ini
 inventoryGroup: webservers
 steps:
@@ -300,6 +305,29 @@ steps:
   - name: Restart app
     type: ssh
     command: pm2 restart myapp
+  - name: Ensure app dir
+    type: directory
+    path: /var/www/myapp
+  - name: Write config
+    type: copy
+    path: /var/www/myapp/config.yaml
+    content: "key: value"
+    mode: "0644"
+  - name: Ensure app user
+    type: user
+    user: appuser
+    system: true
+  - name: Ensure nginx
+    type: package
+    package: nginx
+  - name: Ensure nginx enabled
+    type: service
+    service: nginx
+    enabled: true
+  - name: Ensure bash line
+    type: lineinfile
+    path: /home/deployer/.bashrc
+    line: "export APP=1"
 watch:
   paths: ["./dist", "./src"]
   repoPath: .
@@ -349,3 +377,14 @@ Part of the **Daffodil** family alongside [JSDaffodil](https://www.npmjs.com/pac
 <div align="center">
   <p>Made with care by <a href="https://github.com/marcuwynu23">Mark Wayne B. Menorca</a></p>
 </div>
+
+## Idempotency
+
+Daffodil makes SSH provisioning idempotent across JSDaffodil, PyDaffodil, and GoDaffodil.
+
+- **`EnsureLineInFile(path, line, marker)`**, **`WriteFileIfChanged(path, content, mode, owner)`**, **`EnsurePackage(name)`**, **`EnsureUser(name, system)`, `EnsureServiceEnabled(name, enabled)`, `EnsureDirectory(path)`** — idempotent helpers returning a change flag.
+- **`TransferFiles(local, dest) (bool, error)`** — skips transfer when a content manifest hash matches the remote.
+- Steps may declare **`When: changed`** so follow-ups (e.g. restart) run only after a real change.
+- `godaffodil run --check` reports `ok` / `changed` / `would-change` without mutating the host.
+
+Repeated deploys with no source changes produce zero changed steps and no duplicate lines or re-extracts.

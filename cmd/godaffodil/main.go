@@ -31,6 +31,7 @@ type yamlConfig struct {
 	SSHKeyPath     string     `yaml:"sshKeyPath"`
 	IgnoreFile     string     `yaml:"ignoreFile"`
 	Verbose        bool       `yaml:"verbose"`
+	Check          bool       `yaml:"check"`
 	InventoryFile  string     `yaml:"inventoryFile"`
 	InventoryYml   string     `yaml:"inventoryYml"`
 	InventoryGroup string     `yaml:"inventoryGroup"`
@@ -41,6 +42,19 @@ type yamlConfig struct {
 		Command         string `yaml:"command"`
 		LocalPath       string `yaml:"localPath"`
 		DestinationPath string `yaml:"destinationPath"`
+		When            string `yaml:"when"`
+		Marker          string `yaml:"marker"`
+		Line            string `yaml:"line"`
+		Path            string `yaml:"path"`
+		Content         string `yaml:"content"`
+		Src             string `yaml:"src"`
+		Mode            string `yaml:"mode"`
+		Owner           string `yaml:"owner"`
+		Enabled         bool   `yaml:"enabled"`
+		System          bool   `yaml:"system"`
+		Package         string `yaml:"package"`
+		User            string `yaml:"user"`
+		Service         string `yaml:"service"`
 	} `yaml:"steps"`
 	Watch struct {
 		Paths      []string `yaml:"paths"`
@@ -67,6 +81,7 @@ func runFromYAML(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	configPath := fs.String("config", ".daffodil.yml", "path to deployment YAML")
 	watchMode := fs.Bool("watch", false, "run watch mode")
+	checkMode := fs.Bool("check", false, "report pending changes without modifying the remote host")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -120,6 +135,63 @@ func runFromYAML(args []string) error {
 		return errors.New("config must define hosts[] or remoteUser/remoteHost")
 	}
 
+	supported := map[string]bool{
+		"local":      true,
+		"ssh":        true,
+		"transfer":   true,
+		"lineinfile": true,
+		"copy":       true,
+		"package":    true,
+		"user":       true,
+		"service":    true,
+		"directory":  true,
+	}
+	for _, s := range cfg.Steps {
+		stype := strings.ToLower(strings.TrimSpace(s.Type))
+		if !supported[stype] {
+			return fmt.Errorf("unsupported step type: %s", s.Type)
+		}
+		if s.When != "" && s.When != "changed" && s.When != "always" {
+			return fmt.Errorf("unsupported when condition: %s", s.When)
+		}
+		if stype == "lineinfile" {
+			if strings.TrimSpace(s.Path) == "" {
+				return errors.New("lineinfile step requires 'path'")
+			}
+			if strings.TrimSpace(s.Line) == "" {
+				return errors.New("lineinfile step requires 'line'")
+			}
+		}
+		if stype == "copy" {
+			if strings.TrimSpace(s.Path) == "" {
+				return errors.New("copy step requires 'path'")
+			}
+			if strings.TrimSpace(s.Content) == "" && strings.TrimSpace(s.Src) == "" {
+				return errors.New("copy step requires 'content' or 'src'")
+			}
+		}
+		if stype == "package" {
+			if strings.TrimSpace(s.Package) == "" {
+				return errors.New("package step requires 'package'")
+			}
+		}
+		if stype == "user" {
+			if strings.TrimSpace(s.User) == "" {
+				return errors.New("user step requires 'user'")
+			}
+		}
+		if stype == "service" {
+			if strings.TrimSpace(s.Service) == "" {
+				return errors.New("service step requires 'service'")
+			}
+		}
+		if stype == "directory" {
+			if strings.TrimSpace(s.Path) == "" {
+				return errors.New("directory step requires 'path'")
+			}
+		}
+	}
+
 	for _, h := range hosts {
 		d, err := godaffodil.New(godaffodil.Config{
 			RemoteUser: pick(h.User, cfg.RemoteUser),
@@ -129,6 +201,7 @@ func runFromYAML(args []string) error {
 			SSHKeyPath: cfg.SSHKeyPath,
 			IgnoreFile: pick(cfg.IgnoreFile, ".scpignore"),
 			Verbose:    cfg.Verbose,
+			Check:      *checkMode || cfg.Check,
 		})
 		if err != nil {
 			return err
@@ -147,7 +220,68 @@ func runFromYAML(args []string) error {
 			case "ssh":
 				steps = append(steps, godaffodil.Step{Name: name, Command: func() error { return d.SSHCommand(step.Command) }})
 			case "transfer":
-				steps = append(steps, godaffodil.Step{Name: name, Command: func() error { return d.TransferFiles(step.LocalPath, step.DestinationPath) }})
+				steps = append(steps, godaffodil.Step{Name: name, Command: func() error {
+					if _, err := d.TransferFiles(step.LocalPath, step.DestinationPath); err != nil {
+						return err
+					}
+					return nil
+				}})
+			case "lineinfile":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						return d.EnsureLineInFile(step.Path, step.Line, step.Marker)
+					},
+				})
+			case "copy":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						content := step.Content
+						if strings.TrimSpace(content) == "" {
+							srcBytes, readErr := os.ReadFile(filepath.Join(filepath.Dir(*configPath), step.Src))
+							if readErr != nil {
+								return false, readErr
+							}
+							content = string(srcBytes)
+						}
+						return d.WriteFileIfChanged(step.Path, content, step.Mode, step.Owner)
+					},
+				})
+			case "package":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						return d.EnsurePackage(step.Package)
+					},
+				})
+			case "user":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						return d.EnsureUser(step.User, step.System)
+					},
+				})
+			case "service":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						return d.EnsureServiceEnabled(step.Service, step.Enabled)
+					},
+				})
+			case "directory":
+				steps = append(steps, godaffodil.Step{
+					Name: name,
+					When: step.When,
+					StateCommand: func() (bool, error) {
+						return d.EnsureDirectory(step.Path)
+					},
+				})
 			default:
 				return fmt.Errorf("unsupported step type: %s", step.Type)
 			}
@@ -177,8 +311,24 @@ func runFromYAML(args []string) error {
 				return err
 			}
 		} else {
-			if err := d.Deploy(steps); err != nil {
-				return err
+			results, deployErr := d.DeployWithResults(steps)
+			if deployErr != nil {
+				return deployErr
+			}
+			failed := false
+			changedCount := 0
+			for _, r := range results {
+				if r.Status == "changed" || r.Status == "would-change" {
+					changedCount++
+				}
+				if r.Status == "failed" {
+					failed = true
+				}
+				fmt.Printf("  [%s] %s\n", r.Status, r.Name)
+			}
+			fmt.Printf("Summary: %d changed, %d would-change\n", changedCount, changedCount)
+			if failed {
+				return errors.New("deployment failed")
 			}
 		}
 	}
@@ -220,6 +370,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("  --config   Path to .daffodil.yml (filename must be exactly .daffodil.yml)")
 	fmt.Println("  --watch    Use watch section in the YAML and keep the process running")
+	fmt.Println("  --check    Report would-change steps without mutating the remote host")
 	fmt.Println()
 	fmt.Println("Example:")
 	fmt.Println("  godaffodil run --config samples/.daffodil.yml")
